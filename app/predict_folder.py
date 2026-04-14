@@ -1,6 +1,4 @@
 """
-CLI: папка WAV -> CSV.
-
 Создаёт CSV в формате задания: `Название файла;label`, где label: 0 = мошенник, 1 = не мошенник.
 """
 
@@ -10,9 +8,8 @@ import argparse
 import csv
 from pathlib import Path
 
-from asr import transcribe_file
-from fraud_hybrid.hybrid_classifier import HybridFraudClassifier
-
+from src.asr import transcribe_file
+from src.fraud_hybrid.hybrid_classifier import HybridFraudClassifier
 
 DEFAULT_CHECKPOINT = Path("checkpoints/hybrid_from_train_plus_test")
 

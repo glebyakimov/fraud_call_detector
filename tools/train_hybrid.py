@@ -10,7 +10,7 @@ import argparse
 import csv
 from pathlib import Path
 
-from fraud_hybrid.hybrid_classifier import HybridFraudClassifier
+from src.fraud_hybrid.hybrid_classifier import HybridFraudClassifier
 
 
 def read_labeled_csv(path: Path, text_col: str, label_col: str, delimiter: str) -> tuple[list[str], list[int]]:

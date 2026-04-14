@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
-from predict_folder import main
+from app.predict_folder import main
 
 
 if __name__ == "__main__":
     main()
+

@@ -8,7 +8,7 @@ import argparse
 import csv
 from pathlib import Path
 
-from asr import load_model, transcribe_file
+from src.asr import load_model, transcribe_file
 
 
 def _iter_wavs(dir_path: Path) -> list[Path]:

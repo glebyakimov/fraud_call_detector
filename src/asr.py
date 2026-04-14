@@ -1,7 +1,7 @@
 """
-ASR (WAV -> текст) для проекта.
+ASR (WAV -> текст).
 
-Загружает GigaAM-v3 с Hugging Face и распознаёт WAV. Длинные записи режутся на чанки,
+Загружает GigaAM-v3 с Hugging Face и распознаёт текст из WAV. Длинные записи режутся на чанки,
 после чего результаты склеиваются в одну строку.
 """
 
@@ -112,10 +112,6 @@ def load_model(
     revision: str = DEFAULT_REVISION,
     device: Optional[Union[str, torch.device]] = None,
 ) -> torch.nn.Module:
-    """
-    Загружает GigaAM через Hugging Face (trust_remote_code).
-    Модель кэшируется в памяти процесса (singleton).
-    """
     global _model, _orig_get_init_context, _orig_finalize_fn
     if _model is None:
         from transformers import AutoModel
@@ -216,18 +212,3 @@ def transcribe_file(
 
     return " ".join(parts).strip()
 
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="GigaAM ASR: wav -> текст")
-    parser.add_argument("wav", type=Path, help="Путь к .wav")
-    parser.add_argument(
-        "--revision",
-        default=DEFAULT_REVISION,
-        help=f"Ветка модели на HF (по умолчанию {DEFAULT_REVISION})",
-    )
-    args = parser.parse_args()
-
-    load_model(revision=args.revision)
-    print(transcribe_file(args.wav))

@@ -3,7 +3,7 @@
 
 Считает:
 - мягкие скоринги по группам триггеров (токены/фразы/ё→е)
-- простые числовые мета-признаки (длина, цифры, !/?, токены, пунктуация)
+- числовые мета-признаки (длина, цифры, !/?, токены, пунктуация)
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import List, Sequence
 
 import numpy as np
 
-from fraud_hybrid.text_norm import normalize_for_match
+from .text_norm import normalize_for_match
 
 _TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
@@ -78,7 +78,6 @@ def trigger_group_scores(text: str, groups: Sequence[Sequence[str]]) -> np.ndarr
 
 
 def numeric_meta(text: str) -> np.ndarray:
-    """Дополнительные скаляры для MLP."""
     raw = text or ""
     t_match = normalize_for_match(raw)
     tokens = _token_set(t_match)
@@ -114,3 +113,4 @@ def build_hand_matrix(texts: List[str], groups: Sequence[Sequence[str]]) -> np.n
 
 def hand_dim(num_groups: int) -> int:
     return num_groups + 7
+

@@ -26,7 +26,7 @@ python -m pip install -r requirements-asr.txt
 ### Запуск на одном файле
 
 ```powershell
-python predict_one.py "path\to\file.wav"
+python app\predict_one.py "path\to\file.wav"
 ```
 
 Печатает только `0` или `1`.
@@ -34,7 +34,7 @@ python predict_one.py "path\to\file.wav"
 ### Запуск по папке
 
 ```powershell
-python predict_folder.py "path\to\wav_folder" --out results.csv
+python app\predict_folder.py "path\to\wav_folder" --out results.csv
 ```
 
 CSV будет в формате:
@@ -48,7 +48,7 @@ CSV будет в формате:
 Если нужно — можно указать другой, если вы хотите проверить на своих чекпоинтах.
 
 ```powershell
-python predict_one.py file.wav --checkpoint checkpoints\...
-python predict_folder.py wavs --out results.csv --checkpoint checkpoints\...
+python app\predict_one.py file.wav --checkpoint checkpoints\...
+python app\predict_folder.py wavs --out results.csv --checkpoint checkpoints\...
 ```
 

@@ -1,5 +1,5 @@
 """
-Группы триггеров (рус.): тематические каналы телефонного мошенничества.
+Группы триггеров: тематические каналы телефонного мошенничества.
 Строка в файле = одна группа, маркеры через | (см. load_groups).
 Совпадения считаются в hand_features: токены, фразы, ё/е.
 """
@@ -218,3 +218,4 @@ def load_groups(path: Path | None) -> List[List[str]]:
         if parts:
             groups.append(parts)
     return groups if groups else [list(g) for g in DEFAULT_GROUPS]
+

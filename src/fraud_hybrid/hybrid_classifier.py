@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence
 
 import joblib
 import numpy as np
@@ -16,9 +16,9 @@ import torch.nn as nn
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 
-from fraud_hybrid.hand_features import build_hand_matrix, hand_dim
-from fraud_hybrid.text_norm import normalize_text
-from fraud_hybrid.trigger_lexicon import load_groups
+from .hand_features import build_hand_matrix, hand_dim
+from .text_norm import normalize_text
+from .trigger_lexicon import load_groups
 
 
 class _MLPHead(nn.Module):
@@ -90,9 +90,6 @@ class HybridFraudClassifier:
         seed: int = 42,
         class_weight: bool = True,
     ) -> dict[str, Any]:
-        """
-        labels: 0 = мошенничество, 1 = легитимный разговор.
-        """
         texts = list(texts)
         y = np.asarray(labels, dtype=np.int64)
         norm = [normalize_text(t) for t in texts]
@@ -113,13 +110,12 @@ class HybridFraudClassifier:
         self._in_dim = X.shape[1]
 
         uniq = np.unique(y)
-        n = X.shape[0]
+        n_all = X.shape[0]
         counts = {int(c): int((y == c).sum()) for c in uniq}
         min_cls = min(counts.values()) if counts else 0
-        # Стратификация только если классов хватает на train и val
-        use_strat = len(uniq) > 1 and min_cls >= 2 and n >= 12
+        use_strat = len(uniq) > 1 and min_cls >= 2 and n_all >= 12
         strat = y if use_strat else None
-        if n < 8:
+        if n_all < 8:
             X_tr, y_tr, X_va, y_va = X, y, X, y
         else:
             X_tr, X_va, y_tr, y_va = train_test_split(
@@ -138,8 +134,12 @@ class HybridFraudClassifier:
         history: dict[str, list[float]] = {"loss": [], "val_acc": []}
 
         self._model.train()
-        for ep in range(epochs):
-            perm = torch.randperm(n, device=self._device) if self._device.type == "cuda" else torch.randperm(n)
+        for _ep in range(epochs):
+            perm = (
+                torch.randperm(n, device=self._device)
+                if self._device.type == "cuda"
+                else torch.randperm(n)
+            )
             total_loss = 0.0
             steps = 0
             for i in range(0, n, batch_size):
@@ -163,10 +163,12 @@ class HybridFraudClassifier:
             history["val_acc"].append(acc)
             self._model.train()
 
-        return {"history": history, "val_acc_final": history["val_acc"][-1] if history["val_acc"] else 0.0}
+        return {
+            "history": history,
+            "val_acc_final": history["val_acc"][-1] if history["val_acc"] else 0.0,
+        }
 
     def _class_weights(self, y: np.ndarray) -> torch.Tensor:
-        # инверсия частоты класса
         n0 = max(int((y == 0).sum()), 1)
         n1 = max(int((y == 1).sum()), 1)
         w0 = len(y) / (2.0 * n0)
@@ -203,12 +205,15 @@ class HybridFraudClassifier:
             "hand_dim": hand_dim(len(self.groups)),
             "num_groups": len(self.groups),
         }
-        (dir_path / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        groups_path = dir_path / "groups.json"
-        groups_path.write_text(json.dumps(self.groups, ensure_ascii=False, indent=2), encoding="utf-8")
+        (dir_path / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (dir_path / "groups.json").write_text(
+            json.dumps(self.groups, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     @classmethod
-    def load(cls, dir_path: Path) -> HybridFraudClassifier:
+    def load(cls, dir_path: Path) -> "HybridFraudClassifier":
         dir_path = Path(dir_path)
         meta = json.loads((dir_path / "meta.json").read_text(encoding="utf-8"))
         obj = cls(
@@ -230,3 +235,4 @@ class HybridFraudClassifier:
         obj._model.to(obj._device)
         obj._model.eval()
         return obj
+
