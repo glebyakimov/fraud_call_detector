@@ -1,0 +1,9 @@
+{
+  "tfidf_max_features": 3500,
+  "tfidf_ngram_max": 2,
+  "hidden": 256,
+  "dropout": 0.25,
+  "in_dim": 3523,
+  "hand_dim": 23,
+  "num_groups": 16
+}
