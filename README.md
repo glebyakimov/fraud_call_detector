@@ -23,7 +23,7 @@ winget install --id Gyan.FFmpeg -e
 python -m pip install -r requirements-asr.txt
 ```
 
-### Запуск на одном файле (как в задании «дали 1 wav»)
+### Запуск на одном файле
 
 ```powershell
 python predict_one.py "path\to\file.wav"
@@ -31,7 +31,7 @@ python predict_one.py "path\to\file.wav"
 
 Печатает только `0` или `1`.
 
-### Запуск по папке (CSV как в задании)
+### Запуск по папке
 
 ```powershell
 python predict_folder.py "path\to\wav_folder" --out results.csv
