@@ -3,6 +3,21 @@ ASR (WAV -> текст).
 
 Загружает GigaAM-v3 с Hugging Face и распознаёт текст из WAV. Длинные записи режутся на чанки,
 после чего результаты склеиваются в одну строку.
+
+Ключевые детали реализации (важно для Windows/Transformers):
+- Мы читаем/пишем WAV через `soundfile`, а не `torchaudio.load/save`, потому что на Windows
+  у `torchaudio` бывают проблемы с `torchcodec`/DLL.
+- Внутри `transformers` в некоторых версиях есть оптимизация с устройством `meta`
+  (создание модели “без настоящих весов” для экономии RAM). Для GigaAM remote-code это ломалось,
+  потому что внутри модели создаются буферы torchaudio на CPU → конфликт `cpu` vs `meta`.
+  Поэтому ниже есть патч `PreTrainedModel.get_init_context`, который отключает `meta`-инициализацию
+  **только** для `GigaAMModel`.
+- Ещё один патч: у GigaAM remote-code иногда отсутствует `all_tied_weights_keys`, который ожидает
+  `transformers` при финализации загрузки. Мы добавляем пустой атрибут перед финализацией.
+
+Поток данных:
+`wav file` → `_load_mono_16k` (моно + 16 kHz) → (если длинно) чанки по ~24 сек →
+временные `.wav` → `model.transcribe(path)` → текст → склейка.
 """
 
 from __future__ import annotations
@@ -17,6 +32,7 @@ import soundfile as sf
 import torch
 import torchaudio
 
+# --- Константы препроцессинга аудио ---
 _SAMPLE_RATE = 16_000
 _MAX_CHUNK_SECONDS = 24
 _MAX_CHUNK_SAMPLES = _MAX_CHUNK_SECONDS * _SAMPLE_RATE
@@ -24,9 +40,11 @@ _MAX_CHUNK_SAMPLES = _MAX_CHUNK_SECONDS * _SAMPLE_RATE
 DEFAULT_MODEL_ID = "ai-sage/GigaAM-v3"
 DEFAULT_REVISION = "e2e_rnnt"
 
+# Кэш модели внутри процесса: чтобы не перезагружать HF-модель на каждом файле.
 _model: Optional[torch.nn.Module] = None
 _device: Optional[torch.device] = None
 
+# Сохраняем оригинальные методы transformers, чтобы после загрузки вернуть как было.
 _orig_get_init_context: Any = None
 _orig_finalize_fn: Any = None
 
@@ -48,6 +66,8 @@ def _gigaam_get_init_context(
             allow_all_kernels,
         )
 
+    # Для GigaAMModel мы не добавляем torch.device("meta") (кроме ветки quantized),
+    # чтобы избежать ошибки device mismatch при создании внутренних компонентов.
     from transformers import initialization as init
     from transformers.integrations import deepspeed_config, is_deepspeed_zero3_enabled
     from transformers.integrations.hub_kernels import allow_all_hub_kernels
@@ -86,6 +106,7 @@ def _gigaam_get_init_context(
 
 def _gigaam_finalize_model_loading(model, load_config, loading_info):
     assert _orig_finalize_fn is not None
+    # У некоторых версий remote-code GigaAM нет атрибута, который ожидает transformers.
     if getattr(model.config, "model_type", None) == "gigaam" and not hasattr(
         model, "all_tied_weights_keys"
     ):
@@ -95,6 +116,9 @@ def _gigaam_finalize_model_loading(model, load_config, loading_info):
 
 def get_device() -> torch.device:
     global _device
+    # Приоритет можно задать через переменную окружения:
+    # - GIGAAM_DEVICE=cpu
+    # - GIGAAM_DEVICE=cuda
     if _device is None:
         prefer_cuda = os.environ.get("GIGAAM_DEVICE", "").lower()
         if prefer_cuda == "cpu":
@@ -114,6 +138,7 @@ def load_model(
 ) -> torch.nn.Module:
     global _model, _orig_get_init_context, _orig_finalize_fn
     if _model is None:
+        # Модель подгружается из Hugging Face (скачается в локальный кеш при первом запуске).
         from transformers import AutoModel
         from transformers.modeling_utils import PreTrainedModel
 
@@ -136,6 +161,8 @@ def load_model(
                 trust_remote_code=True,
             )
         finally:
+            # Очень важно вернуть оригинальные методы, чтобы другие модели/части кода
+            # не работали “с нашим патчем”.
             PreTrainedModel.get_init_context = _orig_get_init_context
             PreTrainedModel._finalize_model_loading = staticmethod(_orig_finalize_fn)  # type: ignore[assignment]
         _model = _model.to(dev)
@@ -144,21 +171,26 @@ def load_model(
 
 
 def _load_mono_16k(wav_path: Path) -> torch.Tensor:
+    # soundfile читает wav устойчиво на Windows, возвращает float32 [-1..1] (обычно).
+    # always_2d=True → [num_samples, num_channels]
     data, sr = sf.read(str(wav_path), always_2d=True, dtype="float32")
     wav = torch.from_numpy(np.ascontiguousarray(data.T))
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
     if sr != _SAMPLE_RATE:
+        # Resample делаем через torchaudio (это работает стабильно).
         wav = torchaudio.functional.resample(wav, sr, _SAMPLE_RATE)
     return wav
 
 
 def _save_wav_mono_16k(path: str, wav: torch.Tensor) -> None:
+    # GigaAM transcribe ожидает путь к wav-файлу, поэтому мы сохраняем временный wav на диск.
     x = wav.squeeze(0).detach().cpu().numpy()
     sf.write(path, x, _SAMPLE_RATE, subtype="PCM_16")
 
 
 def _transcribe_path(model: torch.nn.Module, path: str) -> str:
+    # Метод `transcribe` — это часть remote-code модели GigaAM.
     out = model.transcribe(path)
     if out is None:
         return ""
@@ -171,15 +203,18 @@ def transcribe_file(
     model: Optional[torch.nn.Module] = None,
     revision: str = DEFAULT_REVISION,
 ) -> str:
+    # Здесь сознательно принимаем и str и Path, чтобы CLI-скрипты были проще.
     path = Path(wav_path).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
 
+    # Поднимаем модель (или используем уже загруженную), затем работаем только с аудио-тензором.
     m = model or load_model(revision=revision)
     wav = _load_mono_16k(path)
     n = wav.shape[-1]
 
     if n <= _MAX_CHUNK_SAMPLES:
+        # Короткий файл: просто транскрибируем одним куском.
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
         try:
@@ -191,6 +226,7 @@ def transcribe_file(
             except OSError:
                 pass
 
+    # Длинный файл: режем на чанки фиксированного размера.
     parts: list[str] = []
     start = 0
     while start < n:

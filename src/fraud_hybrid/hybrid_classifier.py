@@ -1,6 +1,16 @@
 """
 Гибрид: [TF-IDF | ручные признаки] -> MLP на GPU.
-Метки: 0 = мошенничество, 1 = не мошенничество (как в задании).
+Метки: 0 = мошенничество, 1 = не мошенничество.
+
+Идея модели:
+- ASR даёт текст разговора (шумный, с ошибками распознавания).
+- Мы строим признаки из текста двумя путями:
+  1) TF‑IDF по символам/словам → ловит “стилистику” и частые n-граммы
+  2) Ручные признаки (см. `hand_features.py`):
+     - “триггер-группы” (банк, смс-код, перевод, полиция, удалённый доступ и т.д.)
+     - числовые мета-фичи (длина, доля цифр, !/?, токены, пунктуация)
+- Дальше всё это объединяется в один вектор и подаётся в небольшой MLP (PyTorch).
+
 """
 
 from __future__ import annotations
@@ -54,7 +64,9 @@ class HybridFraudClassifier:
         self.dropout = dropout
         self.lexicon_path = lexicon_path
 
+        # Триггер-группы: либо дефолтные из `trigger_lexicon.py`, либо из файла пользователя.
         self.groups = load_groups(lexicon_path)
+
         self._vectorizer: Optional[TfidfVectorizer] = None
         self._model: Optional[_MLPHead] = None
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,6 +81,8 @@ class HybridFraudClassifier:
         return self._device
 
     def _transform_texts(self, texts: Sequence[str]) -> np.ndarray:
+        # Превращаем список текстов в numpy-матрицу признаков.
+        # На выходе shape: [N, tfidf_dim + hand_dim]
         assert self._vectorizer is not None
         norm = [normalize_text(t) for t in texts]
         X_tf = self._vectorizer.transform(norm)
@@ -90,10 +104,15 @@ class HybridFraudClassifier:
         seed: int = 42,
         class_weight: bool = True,
     ) -> dict[str, Any]:
+        # Обучение состоит из 3 шагов:
+        # 1) обучаем TF‑IDF на текстах
+        # 2) строим hand-features
+        # 3) обучаем MLP на объединённых признаках
         texts = list(texts)
         y = np.asarray(labels, dtype=np.int64)
         norm = [normalize_text(t) for t in texts]
 
+        # --- TF‑IDF (sklearn) ---
         self._vectorizer = TfidfVectorizer(
             max_features=self.tfidf_max_features,
             ngram_range=(1, self.tfidf_ngram_max),
@@ -109,6 +128,9 @@ class HybridFraudClassifier:
         X = np.hstack([X_tf, X_h]).astype(np.float32)
         self._in_dim = X.shape[1]
 
+        # --- Train/val split ---
+        # Стратификация полезна, но на маленьких наборах может падать,
+        # поэтому включаем её только если данных достаточно.
         uniq = np.unique(y)
         n_all = X.shape[0]
         counts = {int(c): int((y == c).sum()) for c in uniq}
@@ -122,8 +144,12 @@ class HybridFraudClassifier:
                 X, y, test_size=val_ratio, random_state=seed, stratify=strat
             )
 
+        # --- MLP (PyTorch) ---
         self._model = _MLPHead(self._in_dim, self.hidden, self.dropout).to(self._device)
         opt = torch.optim.AdamW(self._model.parameters(), lr=lr, weight_decay=1e-4)
+
+        # CrossEntropyLoss ожидает “логиты” и метки классов 0/1.
+        # class_weight помогает, если классы несбалансированы.
         crit = nn.CrossEntropyLoss(
             weight=self._class_weights(y_tr).to(self._device) if class_weight else None
         )
@@ -135,6 +161,7 @@ class HybridFraudClassifier:
 
         self._model.train()
         for _ep in range(epochs):
+            # Перемешиваем индексы; на CUDA можно сразу генерить на устройстве.
             perm = (
                 torch.randperm(n, device=self._device)
                 if self._device.type == "cuda"
@@ -169,6 +196,8 @@ class HybridFraudClassifier:
         }
 
     def _class_weights(self, y: np.ndarray) -> torch.Tensor:
+        # Веса классов = обратная частота.
+        # Если класс 0 встречается редко, его вес будет больше → модель будет сильнее штрафоваться за ошибки по нему.
         n0 = max(int((y == 0).sum()), 1)
         n1 = max(int((y == 1).sum()), 1)
         w0 = len(y) / (2.0 * n0)
@@ -177,6 +206,8 @@ class HybridFraudClassifier:
 
     @torch.no_grad()
     def predict_proba(self, texts: Sequence[str]) -> np.ndarray:
+        # Возвращает вероятности классов для каждого текста.
+        # shape: [N, 2], где [:,0] ~ P(fraud), [:,1] ~ P(not_fraud)
         self._ensure_fitted()
         assert self._model is not None
         X = self._transform_texts(texts)
@@ -190,6 +221,7 @@ class HybridFraudClassifier:
         return proba.argmax(axis=-1).astype(np.int64)
 
     def save(self, dir_path: Path) -> None:
+        # Сохранение сделано так, чтобы `load()` мог восстановить всё без обучения.
         self._ensure_fitted()
         assert self._model is not None and self._vectorizer is not None and self._in_dim is not None
         dir_path = Path(dir_path)
@@ -214,6 +246,8 @@ class HybridFraudClassifier:
 
     @classmethod
     def load(cls, dir_path: Path) -> "HybridFraudClassifier":
+        # Восстанавливаем модель строго из файлов чекпоинта.
+        # Важно: триггер-группы тоже восстанавливаются, иначе hand-features “съедут” по размерности.
         dir_path = Path(dir_path)
         meta = json.loads((dir_path / "meta.json").read_text(encoding="utf-8"))
         obj = cls(
